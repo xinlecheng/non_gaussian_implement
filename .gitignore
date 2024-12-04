@@ -14,7 +14,7 @@ slurm_out/
 *.ipynb
 
 # Ignore virtual environment
-venv/
+myenv/
 
 # Ignore .vscode config settings
 .vscode/

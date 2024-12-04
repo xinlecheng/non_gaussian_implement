@@ -28,9 +28,11 @@ class Cell:
     def gvec_car(self) -> np.ndarray:
         if self.dim == 2:
             return np.array([[self.vec_car[1][1], -self.vec_car[1][0]],
-                             [-self.vec_car[0][1], self.vec_car[0][0]]])/self.volume()
-        
-        pass
+                             [-self.vec_car[0][1], self.vec_car[0][0]]])*2*np.pi/self.volume()
+        elif self.dim == 3:
+            return np.array([np.cross(self.vec_car[1], self.vec_car[2]),
+                            np.cross(self.vec_car[2], self.vec_car[0]),
+                            np.cross(self.vec_car[0], self.vec_car[1])])*2*np.pi/self.volume()
 
 class ReciproLabel:
     """
@@ -39,5 +41,6 @@ class ReciproLabel:
     def __init__(self, bloch_k, latis_g):
         pass
 
-cell = Cell(3, np.array([[1,0,0],[0,1,0],[0,0,1]]))
-print(cell.volume())
+if __name__ == "__main__":
+    cell = Cell(2, np.array([[1,0],[-1/2,np.sqrt(3)/2]]))
+    print(cell.gvec_car())

@@ -1,0 +1,37 @@
+# Ignore restart files
+*.pkl
+
+# Ignore results
+results/
+
+# Ignore slurm outputs
+slurm_out/
+
+# Ignore .sh
+*.sh
+
+# Ignore .ipynb
+*.ipynb
+
+# Ignore virtual environment
+venv/
+
+# Ignore .vscode config settings
+.vscode/
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore data files
+data/
+*.csv
+*.tsv
+*.mpack
+
+# Ignore other unnecessary files
+.DS_Store
+*.log

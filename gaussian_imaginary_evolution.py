@@ -160,6 +160,7 @@ class ReciproDict:
 class SuperCell:
     '''
     specify a continuum supercell with periodic boundary condition, including the unitcell('unitcell'), supercell size('sc_size'), 
+    ktocar converts a reciprocal vector in fractional coordinates of the supercell reciprocal lattice into cartisian form 
     whether or not the system has spin('spinfull'),
     and number of orbitals in a unitcell('num_orbits')
     '''
@@ -174,6 +175,8 @@ class SuperCell:
         self.ktocar = matmul(np.transpose(self.unitcell.gvec_car()), np.linalg.inv(diagonal_mat(self.sc_size)))
         self.spinfull = spinfull
         self.num_orbits = num_orbits
+        self.bloch_list = None
+        self.recipro_dict = None
     @property
     def dim(self) -> int:
         return self.unitcell.dim
@@ -188,9 +191,13 @@ class SuperCell:
         '''
         generate a kgrid with in the unitcell spanned by {a_i}
         '''
-        return multidim_list(self.sc_size, flatten=True, function=ReciproLabel)
+        self.bloch_list = multidim_list(self.sc_size, flatten=True, function=ReciproLabel)
+        return self.bloch_list
     def generate_recipro_dict(self, cutoff_norm) -> ReciproDict:
-        bloch_list = self.generate_bloch_list()
+        if self.bloch_list == None:
+            bloch_list = self.generate_bloch_list()
+        else:
+            bloch_list = self.bloch_list
         radius = int(np.ceil(sqrt(cutoff_norm**2/min(np.linalg.eigvalsh(matmul(np.transpose(self.ktocar), self.ktocar))))))
         if not self.spinfull and self.num_orbits == 1:    
             basis_ranges = [(-int(np.floor((radius+self.sc_size[i])/self.sc_size[i]))*self.sc_size[i],
@@ -209,9 +216,11 @@ class SuperCell:
         val = {bloch_k:[latis_g for latis_g in basis_candidates 
                                 if norm(self.kcar(bloch_k) + self.kcar(latis_g)) < cutoff_norm]
                         for bloch_k in bloch_list}
-        return ReciproDict(val)
+        self.recipro_dict = ReciproDict(val)
+        return self.recipro_dict
 
-def construct_h0(supercell:SuperCell, recipro_dict:ReciproDict, bloch_k:ReciproLabel) -> np.ndarray:
+def construct_h0(supercell:SuperCell, bloch_k:ReciproLabel) -> np.ndarray:
+    recipro_dict = supercell.recipro_dict
     sector_size = recipro_dict.get_size(bloch_k)
     sc_size = supercell.sc_size
     def h0_element(i:int, j:int):
@@ -265,7 +274,90 @@ def construct_h0(supercell:SuperCell, recipro_dict:ReciproDict, bloch_k:ReciproL
             return 0
     return np.array([[h0_element(i,j) for j in range(sector_size)] for i in range(sector_size)])
 
+class GaussianEvolutionEngine:
+    def __init__(self, step_size, num_steps_max:int, record_intv = 1):
+        self.step_size = step_size
+        self.num_steps_max = num_steps_max
+        self.elapsed_steps = 0
+        self.delta_greenfunc = None
+        self.old_greenfunc = None
+        self.record_intv = record_intv
+    def evolve(self, greenfunc: np.ndarray, h_eff: np.ndarray):
+        h_eff_t = np.transpose(h_eff)
+        if np.mod(self.elapsed_steps, self.record_intv) == 0:
+            self.old_greenfunc = greenfunc
+            self.delta_greenfunc = - self.step_size*(matmul(greenfunc, h_eff_t) + matmul(h_eff_t, greenfunc)
+                                           - 2*matmul(greenfunc, matmul(h_eff_t, greenfunc)))
+            self.elapsed_steps += 1
+            return self.old_greenfunc + self.delta_greenfunc
+        else:
+            self.elapsed_steps += 1
+            return greenfunc - self.step_size*(matmul(greenfunc, h_eff_t) + matmul(h_eff_t, greenfunc)
+                                           - 2*matmul(greenfunc, matmul(h_eff_t, greenfunc)))
+    def get_convergence(self):
+        return norm(self.delta_greenfunc)/norm(self.old_greenfunc)
 
+def symmetrize(mat: np.ndarray, conjugate=False):
+    if not conjugate:
+        return (mat + np.transpose(mat))/2
+    else:
+        return (mat + np.conjugate(np.transpose(mat)))/2
+    
+def antisymmetrize(mat: np.ndarray, conjugate=False):
+    if not conjugate:
+        return (mat - np.transpose(mat))/2
+    else:
+        return (mat - np.conjugate(np.transpose(mat)))/2
+
+def list_match(l:list, condition, matching='and'):
+    res = [condition(ele) for ele in l]
+    if matching == 'and':
+        flag = True
+        for re in res:
+            flag = flag and re
+            if not flag:
+                return flag
+        return flag
+    if matching == 'or':
+        flag = False
+        for re in res:
+            flag = flag or re
+            if flag:
+                return flag
+        return flag
+
+class GreenFuncInitiator:
+    def __init__(self, noise:float=0.1, eigval_tol=0.02):
+        self.noise = noise
+        self.eigval_tol = eigval_tol
+    def isdenmat(self, mat):
+        tol = self.eigval_tol
+        eigvals = np.linalg.eigvalsh(mat)
+        def condition(ele) -> bool:
+            return tol <= ele <= 1-tol
+        return list_match(eigvals, condition, matching='and')
+    
+    def initiate(self, n:int) -> np.ndarray:
+        gfunc_0 = np.identity(n)*0.5 + symmetrize(np.random.uniform(low=-self.noise, high=self.noise, size=(n, n))) +\
+                                antisymmetrize(np.random.uniform(low=-self.noise, high=self.noise, size=(n, n)))*1j
+        eigvals = np.linalg.eigvalsh(gfunc_0)
+        min_val = np.min(eigvals)
+        max_val = np.max(eigvals)
+        if min_val >= self.eigval_tol and max_val <= 1-self.eigval_tol:
+            return gfunc_0
+        else:
+            return self.eigval_tol*np.identity(n) + (gfunc_0 - min_val*np.identity(n))*(1 - 2*self.eigval_tol)/(max_val - min_val)
+
+class HeffGenerator:
+    """
+    assume that the interaction is independent of spin and diagonal in orbit
+    """
+    def __init__(self, supercell:SuperCell, h0:np.ndarray, vint:list):
+        self.supercell = supercell
+        self.h0 = h0
+        self.vint = vint
+    def heff(self, gfuncs:Dict[ReciproLabel, np.ndarray]) -> Dict[ReciproLabel, np.ndarray]:
+        pass
 
 
 if __name__ == "__main__":
@@ -276,7 +368,7 @@ if __name__ == "__main__":
     # print(supercell.dim)
     # print(supercell.sc_size)
     # print(supercell.ktocar)
-    recipro_dict = supercell.generate_recipro_dict(dk*4.1)
+    recipro_dict = supercell.generate_recipro_dict(dk*20.1)
     bloch_list = recipro_dict.bloch_list
     # for bloch in bloch_list:
     #     print(f"bloch vector: {bloch}")
@@ -284,6 +376,14 @@ if __name__ == "__main__":
     #     print(sector_size)
     #     print([recipro_dict.get_val(bloch,i) for i in range(sector_size)])
     #print(construct_h0(supercell, recipro_dict, ReciproLabel((0,0))))
-    h0 = timing(construct_h0, supercell, recipro_dict, ReciproLabel((0,0)))
-    print(timing(np.linalg.eigvalsh, h0))
-    #print(np.linalg.eigvalsh(construct_h0(supercell, recipro_dict, ReciproLabel((0,0)))))
+    size = recipro_dict.get_size(ReciproLabel((0,0)))
+    h0 = -50*np.identity(size)-1*construct_h0(supercell, ReciproLabel((0,0)))
+    initiator = GreenFuncInitiator()
+    gfunc = initiator.initiate(recipro_dict.get_size(ReciproLabel((0,0))))
+    #print(np.linalg.eigvalsh(gfunc))
+    engine = GaussianEvolutionEngine(0.00005, 10000, 5)
+    for i in range(10000):
+        gfunc = engine.evolve(gfunc, h0)
+        if i % 100 == 0:
+            print(f"step: {i+1}, num_ele: {np.trace(gfunc)}")
+    #print(np.linalg.eigvalsh(construct_h0(supercell, ReciproLabel((0,0)))))
